@@ -5,11 +5,10 @@
 #include <QTextEdit>
 #include <QPropertyAnimation>
 #include <QPushButton>
-#include <QThread>
 #include <QSystemTrayIcon> 
 #include <QCloseEvent>     
-#include "workdesk/core/AIEngine.h"
-#include "workdesk/core/FileRecord.h" // 引入数据记录结构
+#include <QMouseEvent> 
+#include "workdesk/core/FileRecord.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -21,6 +20,10 @@ protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
     void closeEvent(QCloseEvent* event) override; 
+    
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private slots:
     void onAIChatSubmitted();
@@ -31,11 +34,10 @@ private slots:
 
 private:
     void refreshDesktop();
-    void setupAI(); 
     void setupTray();       
     void setAutoStart(bool enable); 
-    void showSearchResultsDialog(const QList<FileRecord>& results); // 【新增】结果弹窗
-
+    void showSearchResultsDialog(const QList<FileRecord>& results); 
+    
     QListWidget* fileGrid;
     
     QWidget* rightWidget;
@@ -44,15 +46,20 @@ private:
     QPushButton* ropeButton;
     QPushButton* endChatBtn; 
     QPushButton* refreshBtn; 
+    
+    // 【新增】窗口控制按钮
+    QPushButton* btnMinimize;
+    QPushButton* btnMaximize;
+    QPushButton* btnClose;
+
     QPropertyAnimation* animation;
     bool isAIPanelOpen = true; 
-
-    QThread* aiThread;
-    AIEngine* aiEngine;
 
     QSystemTrayIcon* trayIcon; 
 
     QString dataDir; 
     QString lastUserInput; 
-    bool isQuitting = false; // 【新增】退出标志位
+    bool isQuitting = false; 
+    
+    QPoint m_dragPosition;
 };

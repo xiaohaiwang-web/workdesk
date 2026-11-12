@@ -21,23 +21,32 @@
 #include <QMenu>
 #include <QApplication>
 #include <QSettings>
-#include <QProcess>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QGraphicsDropShadowEffect> 
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("WorkDesk - 智能文件管家");
-    resize(1100, 700);
+    setWindowTitle("WorkDesk - 本地文件管家");
+    resize(1150, 720);
     setAcceptDrops(true);
-
-    dataDir = qEnvironmentVariable("ProgramData") + "/WorkDesk";
-    if (dataDir == "/WorkDesk") { 
-        dataDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/WorkDesk";
-    }
-    QDir().mkpath(dataDir);
-    DatabaseManager::instance().init(dataDir + "/workdesk.db");
-
+    
+    setWindowFlags(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+    
     QWidget* central = new QWidget(this);
+    central->setObjectName("centralWidget");
+    
+    QGraphicsDropShadowEffect* shadow = new QGraphicsDropShadowEffect(central);
+    shadow->setBlurRadius(25);
+    shadow->setColor(QColor(0, 0, 0, 100));
+    shadow->setOffset(0, 0);
+    central->setGraphicsEffect(shadow);
+
+    central->setStyleSheet(
+        "#centralWidget { background-color: #FFFFFF; border-radius: 12px; }"
+        "QToolTip { color: #333; background-color: #FFF; border: 1px solid #CCC; }"
+    );
+
     QHBoxLayout* mainLayout = new QHBoxLayout(central);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
@@ -46,81 +55,123 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QWidget* leftWidget = new QWidget(central);
     QVBoxLayout* leftLayout = new QVBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftWidget->setStyleSheet("background-color: #F3F3F3;");
+    leftWidget->setStyleSheet("background-color: #F8F9FA; border-top-left-radius: 12px; border-bottom-left-radius: 12px;");
     
-    QHBoxLayout* leftHeaderLayout = new QHBoxLayout();
-    leftHeaderLayout->setContentsMargins(10, 5, 10, 5);
-    QLabel* titleLabel = new QLabel("我的桌面 (拖拽文件到这里)", leftWidget);
-    titleLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    QWidget* leftHeader = new QWidget(leftWidget);
+    leftHeader->setFixedHeight(50);
+    leftHeader->setStyleSheet("background-color: #FFFFFF; border-top-left-radius: 12px; border-bottom: 1px solid #EAEAEA;");
+    QHBoxLayout* leftHeaderLayout = new QHBoxLayout(leftHeader);
     
-    refreshBtn = new QPushButton("刷新", leftWidget);
-    refreshBtn->setStyleSheet("QPushButton { border: 1px solid #CCC; border-radius: 3px; padding: 2px 8px; background: #FFF; } "
-                              "QPushButton:hover { background: #E0E0E0; }");
+    QLabel* titleLabel = new QLabel("我的桌面", leftHeader);
+    titleLabel->setStyleSheet("font-weight: 600; font-size: 15px; color: #222;");
+    
+    refreshBtn = new QPushButton("刷新", leftHeader);
+    refreshBtn->setCursor(Qt::PointingHandCursor);
+    refreshBtn->setStyleSheet("QPushButton { border: none; color: #0078D7; font-size: 13px; } "
+                              "QPushButton:hover { text-decoration: underline; }");
     
     leftHeaderLayout->addWidget(titleLabel);
     leftHeaderLayout->addStretch();
     leftHeaderLayout->addWidget(refreshBtn);
 
-    QWidget* headerWidget = new QWidget(leftWidget);
-    headerWidget->setLayout(leftHeaderLayout);
-    headerWidget->setStyleSheet("background-color: #E8E8E8; border-bottom: 1px solid #CCC;");
-    
     fileGrid = new QListWidget(leftWidget);
     fileGrid->setViewMode(QListView::IconMode);
     fileGrid->setResizeMode(QListView::Adjust);
-    fileGrid->setGridSize(QSize(120, 120));
-    fileGrid->setIconSize(QSize(64, 64));
+    
+    // 【核心修复】彻底关闭文本省略，并加大网格宽高
+    fileGrid->setTextElideMode(Qt::ElideNone); 
+    fileGrid->setGridSize(QSize(120, 140)); // 高度给足，容纳三行文字
+    fileGrid->setIconSize(QSize(48, 48));   
     fileGrid->setWordWrap(true);
     fileGrid->setSpacing(10);
     fileGrid->setMovement(QListView::Snap);
     fileGrid->setContextMenuPolicy(Qt::CustomContextMenu);
-    fileGrid->setStyleSheet("QListWidget { background: transparent; border: none; } "
-                            "QListWidget::item { color: #333; } "
-                            "QListWidget::item:selected { background: #CCE8FF; border-radius: 5px; }");
+    
+    QFont gridFont = fileGrid->font();
+    gridFont.setPointSize(9);
+    fileGrid->setFont(gridFont);
+    
+    fileGrid->setStyleSheet(
+        "QListWidget { background: transparent; border: none; outline: none; } "
+        "QListWidget::item { color: #444; border-radius: 6px; padding: 5px; } "
+        "QListWidget::item:hover { background: #F0F0F0; } "
+        "QListWidget::item:selected { background: #E5F3FF; color: #0066CC; }"
+    );
 
-    leftLayout->addWidget(headerWidget);
+    leftLayout->addWidget(leftHeader);
     leftLayout->addWidget(fileGrid);
 
     // ================= 中间：拉手 =================
     ropeButton = new QPushButton("≡", central);
-    ropeButton->setFixedWidth(20);
+    ropeButton->setFixedWidth(14);
     ropeButton->setCursor(Qt::PointingHandCursor);
     ropeButton->setStyleSheet(
-        "QPushButton { background-color: #DDD; border: none; border-left: 1px solid #CCC; border-right: 1px solid #CCC; color: #666; font-weight: bold; font-size: 16px; }"
-        "QPushButton:hover { background-color: #CCC; }"
+        "QPushButton { background-color: #F9F9F9; border: none; border-left: 1px solid #EEE; border-right: 1px solid #EEE; color: #BBB; font-weight: bold; }"
+        "QPushButton:hover { background-color: #F0F0F0; color: #666; }"
     );
 
-    // ================= 右侧：AI 助手区 =================
+    // ================= 右侧：搜索区 =================
     rightWidget = new QWidget(central);
     QVBoxLayout* rightLayout = new QVBoxLayout(rightWidget);
-    rightLayout->setContentsMargins(10, 10, 10, 10);
-    rightWidget->setStyleSheet("background-color: #FAFAFA;");
+    rightLayout->setContentsMargins(15, 10, 15, 15);
+    rightWidget->setStyleSheet("background-color: #FAFAFA; border-top-right-radius: 12px; border-bottom-right-radius: 12px;");
     
     QHBoxLayout* headerAILayout = new QHBoxLayout();
-    QLabel* aiLabel = new QLabel("AI 助手", rightWidget);
-    aiLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    headerAILayout->setContentsMargins(0, 0, 0, 0);
     
-    endChatBtn = new QPushButton("结束对话", rightWidget);
-    endChatBtn->setStyleSheet("QPushButton { color: #D32F2F; border: 1px solid #D32F2F; border-radius: 3px; padding: 2px 8px; } "
-                              "QPushButton:hover { background-color: #FFCDD2; }");
+    QLabel* aiLabel = new QLabel("极速搜索", rightWidget);
+    aiLabel->setStyleSheet("font-weight: 600; font-size: 15px; color: #222;");
     
+    endChatBtn = new QPushButton("清空", rightWidget);
+    endChatBtn->setCursor(Qt::PointingHandCursor);
+    endChatBtn->setStyleSheet("QPushButton { color: #666; border: 1px solid #DDD; border-radius: 10px; padding: 3px 10px; background: #FFF; font-size: 12px; } "
+                              "QPushButton:hover { background-color: #F5F5F5; color: #D32F2F; border-color: #D32F2F; }");
+
+    btnMinimize = new QPushButton("—", rightWidget);
+    btnMaximize = new QPushButton("□", rightWidget);
+    btnClose = new QPushButton("✕", rightWidget);
+    
+    QString winCtrlStyle = "QPushButton { border: none; font-size: 14px; color: #888; padding: 2px 6px; border-radius: 4px; }"
+                           "QPushButton:hover { background-color: #E0E0E0; color: #000; }";
+    btnMinimize->setStyleSheet(winCtrlStyle);
+    btnMaximize->setStyleSheet(winCtrlStyle);
+    btnClose->setStyleSheet("QPushButton { border: none; font-size: 14px; color: #888; padding: 2px 6px; border-radius: 4px; }"
+                            "QPushButton:hover { background-color: #E81123; color: #FFF; }");
+
+    connect(btnMinimize, &QPushButton::clicked, this, &MainWindow::showMinimized);
+    connect(btnMaximize, &QPushButton::clicked, this, [this]() {
+        if (isMaximized()) showNormal(); else showMaximized();
+    });
+    connect(btnClose, &QPushButton::clicked, this, &MainWindow::close);
+
     headerAILayout->addWidget(aiLabel);
     headerAILayout->addStretch();
     headerAILayout->addWidget(endChatBtn);
+    headerAILayout->addSpacing(15);
+    headerAILayout->addWidget(btnMinimize);
+    headerAILayout->addWidget(btnMaximize);
+    headerAILayout->addWidget(btnClose);
     
     chatHistory = new QTextEdit(rightWidget);
     chatHistory->setReadOnly(true);
+    chatHistory->setStyleSheet("QTextEdit { border: none; background: transparent; font-size: 14px; color: #333; }");
     
     chatInput = new QLineEdit(rightWidget);
-    chatInput->setPlaceholderText("输入指令寻找文件，回车...");
-    chatInput->setMinimumHeight(35);
+    chatInput->setPlaceholderText("输入文件名或内容，回车搜索...");
+    chatInput->setMinimumHeight(42);
+    chatInput->setStyleSheet(
+        "QLineEdit { border: 1px solid #E0E0E0; border-radius: 21px; padding: 0 18px; background: #FFF; font-size: 14px; color: #333; } "
+        "QLineEdit:focus { border: 1px solid #0078D7; background: #FFFFFF; }"
+    );
     
     rightLayout->addLayout(headerAILayout);
+    rightLayout->addSpacing(15);
     rightLayout->addWidget(chatHistory);
+    rightLayout->addSpacing(10);
     rightLayout->addWidget(chatInput);
 
-    rightWidget->setMaximumWidth(400);
-    rightWidget->setMinimumWidth(400);
+    rightWidget->setMaximumWidth(380);
+    rightWidget->setMinimumWidth(380);
     isAIPanelOpen = true;
 
     mainLayout->addWidget(leftWidget, 1);
@@ -135,29 +186,87 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::refreshDesktop);
     connect(fileGrid, &QListWidget::customContextMenuRequested, this, &MainWindow::onFileItemContextMenu);
 
+    QPushButton* settingsBtn = new QPushButton("⚙️", rightWidget);
+    settingsBtn->setCursor(Qt::PointingHandCursor);
+    settingsBtn->setStyleSheet("QPushButton { border: none; font-size: 14px; color: #888; } QPushButton:hover { color: #000; }");
+    headerAILayout->insertWidget(2, settingsBtn); 
+
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() {
+        QDialog dlg(this);
+        dlg.setWindowTitle("系统设置");
+        dlg.resize(300, 150);
+        QVBoxLayout* layout = new QVBoxLayout(&dlg);
+        
+        layout->addWidget(new QLabel("大模型 API 地址:"));
+        QLineEdit* apiUrlEdit = new QLineEdit(&dlg);
+        apiUrlEdit->setText("https://api.deepseek.com/v1/chat/completions");
+        layout->addWidget(apiUrlEdit);
+        
+        layout->addWidget(new QLabel("API Key:"));
+        QLineEdit* apiKeyEdit = new QLineEdit(&dlg);
+        apiKeyEdit->setEchoMode(QLineEdit::Password);
+        QSettings settings("WorkDesk", "Config");
+        apiKeyEdit->setText(settings.value("apiKey").toString());
+        layout->addWidget(apiKeyEdit);
+        
+        QDialogButtonBox* btnBox = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dlg);
+        layout->addWidget(btnBox);
+        
+        connect(btnBox, &QDialogButtonBox::accepted, [&]() {
+            settings.setValue("apiUrl", apiUrlEdit->text());
+            settings.setValue("apiKey", apiKeyEdit->text());
+            dlg.accept();
+            QMessageBox::information(this, "成功", "配置已保存！");
+        });
+        connect(btnBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        
+        dlg.exec();
+    });
+
     animation = new QPropertyAnimation(rightWidget, "maximumWidth", this);
-    animation->setDuration(300);
+    animation->setDuration(250);
     animation->setEasingCurve(QEasingCurve::InOutQuad);
 
+    dataDir = qEnvironmentVariable("ProgramData") + "/WorkDesk";
+    if (dataDir == "/WorkDesk") { 
+        dataDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/WorkDesk";
+    }
+    QDir().mkpath(dataDir);
+    DatabaseManager::instance().init(dataDir + "/workdesk.db");
+
     refreshDesktop();
-    setupAI(); 
     setupTray(); 
 }
 
-MainWindow::~MainWindow() {
-    if (aiThread) {
-        aiThread->quit();
-        aiThread->wait(3000);
+MainWindow::~MainWindow() {}
+
+void MainWindow::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && event->pos().y() < 50) {
+        m_dragPosition = event->globalPos() - frameGeometry().topLeft();
+        event->accept();
     }
 }
 
-// 【新增】搜索结果弹窗
+void MainWindow::mouseMoveEvent(QMouseEvent* event) {
+    if (event->buttons() & Qt::LeftButton && event->pos().y() < 50) {
+        move(event->globalPos() - m_dragPosition);
+        event->accept();
+    }
+}
+
+void MainWindow::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        event->accept();
+    }
+}
+
 void MainWindow::showSearchResultsDialog(const QList<FileRecord>& results) {
     if (results.isEmpty()) return;
 
     QDialog dialog(this);
     dialog.setWindowTitle("搜索结果");
     dialog.resize(400, 300);
+    dialog.setStyleSheet("QDialog { background-color: #FFF; } QListWidget { border: 1px solid #EAEAEA; outline: none; } QListWidget::item { padding: 10px; border-bottom: 1px solid #F5F5F5; } QListWidget::item:selected { background: #E5F3FF; color: #0066CC; }");
     
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
     QLabel* tip = new QLabel(QString("为你找到 %1 个相关文件（双击打开）：").arg(results.size()), &dialog);
@@ -173,7 +282,6 @@ void MainWindow::showSearchResultsDialog(const QList<FileRecord>& results) {
     }
     layout->addWidget(list);
 
-    // 双击列表项直接打开文件
     connect(list, &QListWidget::itemDoubleClicked, [&dialog](QListWidgetItem* item) {
         QString path = item->data(Qt::UserRole).toString();
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
@@ -186,15 +294,15 @@ void MainWindow::showSearchResultsDialog(const QList<FileRecord>& results) {
 void MainWindow::onFileItemContextMenu(const QPoint& pos) {
     QListWidgetItem* item = fileGrid->itemAt(pos);
     if (!item) return;
-
     QString filePath = item->data(Qt::UserRole).toString();
 
     QMenu menu(this);
+    menu.setStyleSheet("QMenu { background-color: #FFF; border: 1px solid #DDD; border-radius: 6px; padding: 4px; } QMenu::item { padding: 6px 24px; border-radius: 4px; } QMenu::item:selected { background: #F0F0F0; }");
+    
     QAction* openFolderAction = menu.addAction("打开所在文件夹");
     QAction* reextractAction = menu.addAction("重新提取摘要");
     menu.addSeparator();
     QAction* deleteAction = menu.addAction("彻底删除文件");
-    
     deleteAction->setIcon(QApplication::style()->standardIcon(QStyle::SP_TrashIcon));
 
     QAction* selected = menu.exec(fileGrid->mapToGlobal(pos));
@@ -203,92 +311,79 @@ void MainWindow::onFileItemContextMenu(const QPoint& pos) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(filePath).absolutePath()));
     } 
     else if (selected == deleteAction) {
-        QMessageBox::StandardButton reply = QMessageBox::question(this, "确认删除", 
-            "确定要从电脑中彻底删除文件 \"" + item->text() + "\" 吗？\n此操作不可恢复！", 
-            QMessageBox::Yes | QMessageBox::No);
-        if (reply == QMessageBox::Yes) {
+        if (QMessageBox::question(this, "确认删除", "确定要彻底删除文件吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
             QFile::remove(filePath);
             DatabaseManager::instance().deleteRecord(filePath);
             refreshDesktop();
         }
     }
     else if (selected == reextractAction) {
-        QString summary = FileManager::extractSummary(filePath);
         FileRecord record;
         record.fileName = QFileInfo(filePath).fileName();
         record.filePath = filePath;
-        record.summary = summary;
+        record.summary = FileManager::extractSummary(filePath);
         record.category = FileManager::getCategory(filePath);
         DatabaseManager::instance().addRecord(record);
         refreshDesktop();
-        QMessageBox::information(this, "更新成功", "该文件的摘要已重新提取完毕。");
+        QMessageBox::information(this, "更新成功", "摘要已重新提取。");
     }
 }
 
-// 【重构】核心搜索逻辑
 void MainWindow::onAIChatSubmitted() {
     lastUserInput = chatInput->text().trimmed();
     if (lastUserInput.isEmpty()) return;
 
-    chatHistory->append("<b>你:</b> " + lastUserInput);
+    chatHistory->append("<div style='margin-bottom: 10px;'><b>你:</b> " + lastUserInput + "</div>");
     chatInput->clear();
 
-    // 1. 先做本地直接搜索保底（防 AI 幻觉）
-    // 用户输入“找一下sql作业”，如果文件名里有“sql”，直接就能搜到！
     QString cleanKeyword = lastUserInput;
-    cleanKeyword.replace("找一下", "").replace("帮我", "").replace("查找", "").trimmed();
-    
-    QList<FileRecord> directResults = DatabaseManager::instance().searchFiles(cleanKeyword);
-    if (!directResults.isEmpty()) {
-        chatHistory->append("<b>AI:</b> 为你找到以下文件，请在弹出的窗口中选择：");
-        showSearchResultsDialog(directResults);
+    QStringList stopWords = {
+        "帮我", "找一下", "找一个", "帮我找", "查一下", "查查", "查找", "那个", "这个", "的文件", "文件", "关于", "有关"
+    };
+    for (const QString& word : stopWords) {
+        cleanKeyword.replace(word, " ");
+    }
+    cleanKeyword.replace("的", " ").trimmed();
+
+    QStringList words = cleanKeyword.split(" ", Qt::SkipEmptyParts);
+    if (words.isEmpty()) {
+        chatHistory->append("<div style='color: #888;'><b>系统:</b> 请输入要搜索的文件名或内容。</div>");
         return;
     }
 
-    // 2. 如果直接搜索没搜到，再让 AI 提取核心关键词
-    QList<FileRecord> records = DatabaseManager::instance().getAllRecords();
-    QString fileListStr;
-    for (const auto& r : records) {
-        fileListStr += "文件：" + r.fileName + " | 摘要：" + r.summary.left(20) + "\n";
+    QString finalQuery = words.join(" ");
+    QList<FileRecord> results = DatabaseManager::instance().searchFiles(finalQuery);
+    
+    if (results.isEmpty()) {
+        results = DatabaseManager::instance().searchFiles(lastUserInput);
     }
 
-    // 【核心改动】只让 AI 提取词语
-    QString prompt = "<|im_start|>system\n"
-                     "你是一个关键词提取工具。用户想找文件，请根据用户的描述，在下面的文件列表中寻找最匹配的关键词（比如文件名里的某几个字，或者摘要里的内容）。\n"
-                     "如果找不到任何相关的词，回复“无”。\n"
-                     "用户文件列表参考：\n" + fileListStr +
-                     "<|im_end|>\n"
-                     "<|im_start|>user\n" + lastUserInput + "<|im_end|>\n"
-                     "<|im_start|>assistant\n";
-
-    QMetaObject::invokeMethod(aiEngine, "processPrompt", Qt::QueuedConnection, Q_ARG(QString, prompt));
+    if (results.isEmpty()) {
+        chatHistory->append("<div style='color: #888;'><b>系统:</b> 抱歉，没有找到包含“" + finalQuery + "”的相关文件。</div>");
+    } else {
+        chatHistory->append("<div style='color: #0078D7; margin-bottom: 10px;'><b>系统:</b> 极速匹配到 " + QString::number(results.size()) + " 个文件：</div>");
+        showSearchResultsDialog(results);
+    }
 }
 
 void MainWindow::setupTray() {
     trayIcon = new QSystemTrayIcon(this);
     trayIcon->setIcon(QApplication::style()->standardIcon(QStyle::SP_DirIcon));
-    trayIcon->setToolTip("WorkDesk - 智能文件管家");
+    trayIcon->setToolTip("WorkDesk - 本地文件管家");
 
     QMenu* trayMenu = new QMenu(this);
-    
     QAction* showAction = new QAction("显示主界面", this);
     connect(showAction, &QAction::triggered, this, [this]() {
-        this->showNormal();
-        this->activateWindow();
+        this->showNormal(); this->activateWindow();
     });
 
     QSettings settings("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
-    bool isAutoStart = settings.contains("WorkDesk");
-    
     QAction* autoStartAction = new QAction("开机自启动", this);
     autoStartAction->setCheckable(true);
-    autoStartAction->setChecked(isAutoStart);
-    connect(autoStartAction, &QAction::triggered, this, [this](bool checked) {
-        setAutoStart(checked);
-    });
+    autoStartAction->setChecked(settings.contains("WorkDesk"));
+    connect(autoStartAction, &QAction::triggered, this, &MainWindow::setAutoStart);
 
     QAction* quitAction = new QAction("彻底退出", this);
-    // 【修复】设置标志位，然后再退出
     connect(quitAction, &QAction::triggered, this, [this]() {
         isQuitting = true;
         qApp->quit();
@@ -301,105 +396,44 @@ void MainWindow::setupTray() {
     trayMenu->addAction(quitAction);
 
     trayIcon->setContextMenu(trayMenu);
-    
     connect(trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::DoubleClick) {
-            this->showNormal();
-            this->activateWindow();
+            this->showNormal(); this->activateWindow();
         }
     });
-
     trayIcon->show();
 }
 
 void MainWindow::setAutoStart(bool enable) {
     QSettings settings("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
     if (enable) {
-        QString appPath = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
-        settings.setValue("WorkDesk", appPath);
+        settings.setValue("WorkDesk", QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));
     } else {
         settings.remove("WorkDesk");
     }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    // 【修复】如果是点击了彻底退出，直接放行
-    if (isQuitting) {
-        event->accept();
-        return;
-    }
-
+    if (isQuitting) { event->accept(); return; }
     if (trayIcon->isVisible()) {
-        hide();
-        event->ignore();
-        // 延迟一点点弹气泡，效果更好
+        hide(); event->ignore();
         QTimer::singleShot(100, this, [this]() {
-            trayIcon->showMessage("WorkDesk 正在后台运行", "程序已最小化到托盘，随时为您服务。", QSystemTrayIcon::Information, 2000);
+            trayIcon->showMessage("WorkDesk 正在后台运行", "程序已最小化到托盘。", QSystemTrayIcon::Information, 2000);
         });
-    } else {
-        event->accept();
-    }
-}
-
-void MainWindow::setupAI() {
-    aiThread = new QThread(this);
-    aiEngine = new AIEngine();
-    aiEngine->moveToThread(aiThread);
-
-    connect(aiThread, &QThread::finished, aiEngine, &QObject::deleteLater);
-    
-    connect(aiEngine, &AIEngine::modelLoaded, this, [this](bool success) {
-        if (success) chatHistory->append("<b>系统:</b> AI 模型加载完毕，随时准备为您服务。");
-    });
-    connect(aiEngine, &AIEngine::thinking, this, [this]() {
-        chatHistory->append("<i>AI 正在分析指令...</i>");
-    });
-    connect(aiEngine, &AIEngine::replyGenerated, this, [this](const QString& reply) {
-        QString kw = reply.trimmed();
-        if (kw.isEmpty() || kw.contains("无") || kw.length() > 20) {
-            chatHistory->append("<b>AI:</b> 抱歉，没有找到相关的文件。");
-            return;
-        }
-        
-        // AI 提取了关键词，用关键词去本地数据库搜
-        QList<FileRecord> results = DatabaseManager::instance().searchFiles(kw);
-        if (results.isEmpty()) {
-            chatHistory->append("<b>AI:</b> 没有找到匹配的文件。");
-        } else {
-            chatHistory->append("<b>AI:</b> 提取到关键词：<b>" + kw + "</b>，为你找到以下文件：");
-            showSearchResultsDialog(results);
-        }
-        
-        (void)DatabaseManager::instance().addSearchLog(lastUserInput, kw);
-    });
-    connect(aiEngine, &AIEngine::errorOccurred, this, [this](const QString& err) {
-        chatHistory->append("<b style='color:red;'>错误:</b> " + err);
-    });
-
-    aiThread->start();
-
-    QTimer::singleShot(500, this, [this]() {
-        QString modelPath = dataDir + "/models/model.gguf";
-        QMetaObject::invokeMethod(aiEngine, "loadModel", Qt::QueuedConnection, Q_ARG(QString, modelPath));
-    });
+    } else { event->accept(); }
 }
 
 void MainWindow::toggleAIPanel() {
     animation->stop();
     animation->setStartValue(rightWidget->maximumWidth());
-    if (isAIPanelOpen) {
-        animation->setEndValue(0);
-    } else {
-        animation->setEndValue(400);
-    }
+    animation->setEndValue(isAIPanelOpen ? 0 : 380);
     animation->start();
     isAIPanelOpen = !isAIPanelOpen;
 }
 
 void MainWindow::onEndConversation() {
     chatHistory->clear();
-    chatHistory->append("<b>系统:</b> 对话已结束，历史记忆已清空。您可以开始新的寻找任务。");
-    QMetaObject::invokeMethod(aiEngine, "resetContext", Qt::QueuedConnection);
+    chatHistory->append("<div style='color: #888;'><b>系统:</b> 记录已清空。</div>");
 }
 
 void MainWindow::refreshDesktop() {
@@ -408,12 +442,12 @@ void MainWindow::refreshDesktop() {
     QList<FileRecord> records = DatabaseManager::instance().getAllRecords();
     for (const auto& r : records) {
         if (!QFile::exists(r.filePath)) continue; 
-        
         QListWidgetItem* item = new QListWidgetItem(fileGrid);
         item->setText(r.fileName);
         item->setTextAlignment(Qt::AlignHCenter | Qt::AlignTop);
         item->setIcon(iconProvider.icon(QFileInfo(r.filePath)));
         item->setData(Qt::UserRole, r.filePath);
+        item->setToolTip(r.fileName); // 【新增】鼠标悬停显示完整文件名
     }
 }
 
@@ -445,13 +479,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
 void MainWindow::onFileItemClicked(QListWidgetItem* item) {
     if (!item) return;
     QString path = item->data(Qt::UserRole).toString();
-    QString fileName = item->text();
-
-    QMessageBox::StandardButton reply;
-    reply = QMessageBox::question(this, "打开文件", 
-                                  "确定要打开文件 \"" + fileName + "\" 吗？",
-                                  QMessageBox::Yes | QMessageBox::No);
-    if (reply == QMessageBox::Yes) {
+    if (QMessageBox::question(this, "打开文件", "确定要打开 " + item->text() + " 吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
     }
 }

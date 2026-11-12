@@ -12,7 +12,7 @@ public:
     QList<FileRecord> getAllRecords();
     bool deleteRecord(const QString& filePath);
     
-    // 【新增】本地模糊搜索
+    // 核心升级：全文/多关键词搜索
     QList<FileRecord> searchFiles(const QString& keyword);
 
     bool addSearchLog(const QString& query, const QString& resultFile);
@@ -21,4 +21,5 @@ public:
 private:
     DatabaseManager() = default;
     QSqlDatabase db;
+    bool hasFts5 = false; // 记录是否成功开启了 FTS5 引擎
 };
