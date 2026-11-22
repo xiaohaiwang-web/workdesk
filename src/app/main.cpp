@@ -4,9 +4,11 @@
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
-    
-    MainWindow w;
-    w.show();
-    
+    QCoreApplication::setOrganizationName(QStringLiteral("WorkDesk"));
+    QCoreApplication::setApplicationName(QStringLiteral("WorkDesk"));
+    QApplication::setApplicationDisplayName(QStringLiteral("WorkDesk"));
+
+    MainWindow window;
+    window.showMaximized();
     return app.exec();
 }
