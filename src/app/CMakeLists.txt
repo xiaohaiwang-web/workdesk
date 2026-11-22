@@ -2,6 +2,9 @@ qt_add_executable(workdesk
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    MainWindowUi.cpp
+    FileListModel.h
+    FileListModel.cpp
 )
 
 target_link_libraries(workdesk PRIVATE

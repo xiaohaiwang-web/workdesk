@@ -1,65 +1,106 @@
 #pragma once
+
 #include <QMainWindow>
-#include <QListWidget>
-#include <QLineEdit>
-#include <QTextEdit>
-#include <QPropertyAnimation>
-#include <QPushButton>
-#include <QSystemTrayIcon> 
-#include <QCloseEvent>     
-#include <QMouseEvent> 
+#include <QByteArray>
+#include <QThreadPool>
+#include <QSystemTrayIcon>
+#include <QSortFilterProxyModel>
+#include <QTimer>
+#include <QHash>
+#include <QStringList>
+#include <QList>
+#include <QPoint>
+#include <atomic>
+
 #include "workdesk/core/FileRecord.h"
 
-class MainWindow : public QMainWindow {
+class QListView;
+class QLineEdit;
+class QLabel;
+class QPushButton;
+class QToolButton;
+class QStackedWidget;
+class QCloseEvent;
+class QShowEvent;
+class QDragEnterEvent;
+class QDropEvent;
+class QModelIndex;
+class FileListModel;
+
+class MainWindow final : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow();
+    ~MainWindow() override;
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
-    void closeEvent(QCloseEvent* event) override; 
-    
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-
-private slots:
-    void onAIChatSubmitted();
-    void onFileItemClicked(QListWidgetItem* item);
-    void toggleAIPanel(); 
-    void onEndConversation(); 
-    void onFileItemContextMenu(const QPoint& pos); 
+    void closeEvent(QCloseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
-    void refreshDesktop();
-    void setupTray();       
-    void setAutoStart(bool enable); 
-    void showSearchResultsDialog(const QList<FileRecord>& results); 
-    
-    QListWidget* fileGrid;
-    
-    QWidget* rightWidget;
-    QTextEdit* chatHistory;
-    QLineEdit* chatInput;
-    QPushButton* ropeButton;
-    QPushButton* endChatBtn; 
-    QPushButton* refreshBtn; 
-    
-    // 【新增】窗口控制按钮
-    QPushButton* btnMinimize;
-    QPushButton* btnMaximize;
-    QPushButton* btnClose;
+    static QString themeStyleSheet();
+    QWidget* createSystemBar();
+    QWidget* createSidebar();
+    QWidget* createMainContent();
+    QPushButton* createNavigationButton(const QString& label, const QString& category);
 
-    QPropertyAnimation* animation;
-    bool isAIPanelOpen = true; 
+    void runSearch();
+    void applySearchResults(quint64 generation, const QString& query,
+                            const QList<FileRecord>& results);
+    void importFiles(const QStringList& filePaths);
+    void chooseFiles();
+    void reextractSummary(const FileRecord& record);
+    void updateContentState();
+    void updateCounts();
+    void setStatus(const QString& message);
+    void updatePreview(const QModelIndex& proxyIndex);
+    void setCategoryFilter(const QString& category, const QString& label);
+    void setViewMode(bool compact);
+    void openRecord(const FileRecord& record);
 
-    QSystemTrayIcon* trayIcon; 
+    void setupTray();
+    void setAutoStart(bool enable);
 
-    QString dataDir; 
-    QString lastUserInput; 
-    bool isQuitting = false; 
-    
-    QPoint m_dragPosition;
+private slots:
+    void onFileActivated(const QModelIndex& index);
+    void onFileContextMenu(const QPoint& pos);
+
+private:
+    QListView* m_fileView = nullptr;
+    FileListModel* m_fileModel = nullptr;
+    QSortFilterProxyModel* m_proxyModel = nullptr;
+    QLineEdit* m_searchEdit = nullptr;
+    QLabel* m_statusLabel = nullptr;
+    QLabel* m_engineStatusLabel = nullptr;
+    QLabel* m_fileCountLabel = nullptr;
+    QLabel* m_listTitleLabel = nullptr;
+    QLabel* m_resultCountLabel = nullptr;
+    QLabel* m_emptyTitleLabel = nullptr;
+    QLabel* m_emptyDescriptionLabel = nullptr;
+    QLabel* m_detailNameLabel = nullptr;
+    QLabel* m_detailPathLabel = nullptr;
+    QLabel* m_detailCategoryLabel = nullptr;
+    QLabel* m_detailSummaryLabel = nullptr;
+    QLabel* m_detailExtensionLabel = nullptr;
+    QLabel* m_detailMetaLabel = nullptr;
+    QPushButton* m_openSelectedButton = nullptr;
+    QToolButton* m_gridModeButton = nullptr;
+    QToolButton* m_listModeButton = nullptr;
+    QStackedWidget* m_contentStack = nullptr;
+    QHash<QString, QPushButton*> m_navigationButtons;
+
+    QTimer* m_searchTimer = nullptr;
+    QThreadPool m_searchPool;
+    QThreadPool m_importPool;
+    std::atomic<quint64> m_searchGeneration{0};
+
+    QSystemTrayIcon* m_trayIcon = nullptr;
+    QString m_dataDir;
+    QString m_activeCategory;
+    QString m_activeCategoryLabel = QStringLiteral("全部文件");
+    bool m_isQuitting = false;
+    bool m_databaseReady = false;
 };
