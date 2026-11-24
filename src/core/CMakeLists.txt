@@ -19,6 +19,7 @@ target_include_directories(workdesk_core PUBLIC
 # 链接第三方库
 target_link_libraries(workdesk_core PUBLIC 
     Qt6::Core 
+    Qt6::Gui
     Qt6::Sql 
     aspose_pdf_foss
     zip

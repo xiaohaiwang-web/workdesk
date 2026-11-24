@@ -7,6 +7,8 @@
 #include <QApplication>
 #include <QAction>
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QTime>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -82,12 +84,16 @@ auto searchDatabaseRecords(Database& database, const QString& query, long)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
+    // All application exits flow through requestShutdown(), which drains workers
+    // and terminates OCR/Office child processes before the event loop stops.
+    QApplication::setQuitOnLastWindowClosed(false);
+
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setWindowTitle(QStringLiteral("WorkDesk"));
     resize(1440, 900);
     setMinimumSize(1120, 720);
     setAcceptDrops(true);
-    setStyleSheet(themeStyleSheet());
+    setStyleSheet(themeStyleSheet(0.0));
 
     m_searchPool.setMaxThreadCount(2);
     m_searchPool.setExpiryTimeout(-1);
@@ -109,6 +115,14 @@ MainWindow::MainWindow(QWidget* parent)
     bodyLayout->addWidget(createMainContent(), 1);
     rootLayout->addWidget(body, 1);
     setCentralWidget(central);
+
+    // Theme changes only at coarse 30-minute intervals; there is no animation loop.
+    m_themeTimer = new QTimer(this);
+    m_themeTimer->setTimerType(Qt::VeryCoarseTimer);
+    m_themeTimer->setInterval(30 * 60 * 1000);
+    connect(m_themeTimer, &QTimer::timeout, this, &MainWindow::updateThemeForCurrentTime);
+    updateThemeForCurrentTime();
+    m_themeTimer->start();
 
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
@@ -136,24 +150,34 @@ MainWindow::MainWindow(QWidget* parent)
     m_databaseReady = DatabaseManager::instance().init(
         QDir(m_dataDir).filePath(QStringLiteral("workdesk.db")));
     if (m_engineStatusLabel) {
-        if (m_databaseReady) {
-            m_engineStatusLabel->setText(QStringLiteral("●  本地文件库已连接"));
-        } else {
-            m_engineStatusLabel->setText(QStringLiteral("●  本地文件库不可用"));
-            m_engineStatusLabel->setStyleSheet(QStringLiteral(
-                "color: #A65A54; background: #FFF1EF; border: 1px solid #F2D8D4;"
-                "border-radius: 12px; padding: 5px 10px; font-size: 9px; font-weight: 650;"));
-        }
+        m_engineStatusLabel->setText(m_databaseReady
+            ? QStringLiteral("●  本地文件库已连接")
+            : QStringLiteral("●  本地文件库不可用"));
+        m_engineStatusLabel->setProperty("unavailable", !m_databaseReady);
+        m_engineStatusLabel->style()->unpolish(m_engineStatusLabel);
+        m_engineStatusLabel->style()->polish(m_engineStatusLabel);
     }
     if (!m_databaseReady)
         setStatus(QStringLiteral("数据库初始化失败，请检查数据目录和 SQLite 驱动。"));
 
     setupTray();
     runSearch();
+    if (m_databaseReady)
+        indexLegacyFiles();
 }
 
 MainWindow::~MainWindow()
 {
+    m_shutdownRequested.store(true, std::memory_order_relaxed);
+    if (m_searchTimer)
+        m_searchTimer->stop();
+    if (m_themeTimer)
+        m_themeTimer->stop();
+    m_searchPool.clear();
+    m_importPool.clear();
+    // requestShutdown() keeps the event loop alive until active work has observed
+    // cancellation. These waits should therefore be short and bounded by one page
+    // of any currently-running native parser/OCR operation.
     m_searchPool.waitForDone();
     m_importPool.waitForDone();
 }
@@ -186,7 +210,7 @@ void MainWindow::setCategoryFilter(const QString& category, const QString& label
 
 void MainWindow::runSearch()
 {
-    if (!m_searchEdit)
+    if (m_isQuitting || !m_searchEdit)
         return;
     if (!m_databaseReady) {
         setStatus(QStringLiteral("数据库不可用，暂时无法搜索。"));
@@ -196,12 +220,14 @@ void MainWindow::runSearch()
     const QString query = m_searchEdit->text().trimmed();
     const quint64 generation = ++m_searchGeneration;
     QPointer<MainWindow> self(this);
+    const std::atomic_bool* cancel = &m_shutdownRequested;
 
     setStatus(query.isEmpty() ? QStringLiteral("正在加载文件库…")
                               : QStringLiteral("正在搜索：%1").arg(query));
 
-    m_searchPool.start(QRunnable::create([self, generation, query]() {
-        if (!self || generation != self->m_searchGeneration.load())
+    m_searchPool.start(QRunnable::create([self, generation, query, cancel]() {
+        if (!self || cancel->load(std::memory_order_relaxed)
+            || generation != self->m_searchGeneration.load())
             return;
 
         QList<FileRecord> results;
@@ -209,10 +235,10 @@ void MainWindow::runSearch()
             results = DatabaseManager::instance().getAllRecords();
         else
             results = searchDatabaseRecords(DatabaseManager::instance(), query, 0);
-        if (!self)
+        if (!self || cancel->load(std::memory_order_relaxed))
             return;
         QMetaObject::invokeMethod(self.data(), [self, generation, query, results]() {
-            if (self)
+            if (self && !self->m_isQuitting)
                 self->applySearchResults(generation, query, results);
         }, Qt::QueuedConnection);
     }));
@@ -319,7 +345,7 @@ void MainWindow::updatePreview(const QModelIndex& proxyIndex)
 
 void MainWindow::importFiles(const QStringList& filePaths)
 {
-    if (filePaths.isEmpty())
+    if (m_isQuitting || filePaths.isEmpty())
         return;
     if (!m_databaseReady) {
         setStatus(QStringLiteral("数据库不可用，无法建立文件索引。"));
@@ -328,13 +354,19 @@ void MainWindow::importFiles(const QStringList& filePaths)
 
     const QString targetDirectory = m_dataDir;
     QPointer<MainWindow> self(this);
+    const std::atomic_bool* cancel = &m_shutdownRequested;
     setStatus(QStringLiteral("正在后台整理 %1 个文件…").arg(filePaths.size()));
 
-    m_importPool.start(QRunnable::create([self, filePaths, targetDirectory]() {
+    m_importPool.start(QRunnable::create([self, filePaths, targetDirectory, cancel]() {
         QList<FileRecord> importedRecords;
+        importedRecords.reserve(4);
         int failedCount = 0;
+        int queuedCount = 0;
+        int savedCount = 0;
 
         for (const QString& path : filePaths) {
+            if (cancel->load(std::memory_order_relaxed))
+                break;
             const QFileInfo sourceInfo(path);
             if (!sourceInfo.exists() || !sourceInfo.isFile()) {
                 ++failedCount;
@@ -351,22 +383,100 @@ void MainWindow::importFiles(const QStringList& filePaths)
             record.fileName = QFileInfo(storedPath).fileName();
             record.filePath = storedPath;
             record.category = FileManager::getCategory(storedPath);
-            record.summary = FileManager::extractSummary(storedPath);
+            const QFileInfo storedInfo(storedPath);
+            record.fileSize = storedInfo.size();
+            record.modifiedAt = storedInfo.lastModified().toString(Qt::ISODateWithMs);
+            record.fullText = FileManager::extractContent(storedPath, &record.contentTruncated, cancel);
+            if (cancel->load(std::memory_order_relaxed))
+                break;
+            record.contentExtracted = true;
+            record.summary = record.fullText.isEmpty() ? FileManager::noTextSummary(storedPath)
+                                                        : FileManager::makeSummary(record.fullText);
             importedRecords.append(record);
+            ++queuedCount;
+
+            // Keep transient memory bounded during multi-file imports.
+            if (importedRecords.size() >= 4) {
+                savedCount += DatabaseManager::instance().addRecords(importedRecords);
+                importedRecords.clear();
+            }
         }
 
-        const int importedCount = importedRecords.size();
-        const int savedCount = DatabaseManager::instance().addRecords(importedRecords);
-        const int totalFailed = failedCount + importedCount - savedCount;
-        if (!self)
+        if (!importedRecords.isEmpty())
+            savedCount += DatabaseManager::instance().addRecords(importedRecords);
+        const int totalFailed = failedCount + queuedCount - savedCount;
+        if (!self || cancel->load(std::memory_order_relaxed))
             return;
         QMetaObject::invokeMethod(self.data(), [self, totalFailed, savedCount]() {
-            if (!self)
+            if (!self || self->m_isQuitting)
                 return;
-
             self->runSearch();
             self->setStatus(QStringLiteral("整理完成 · 成功 %1 个，失败 %2 个")
                                 .arg(savedCount).arg(totalFailed));
+        }, Qt::QueuedConnection);
+    }));
+}
+
+void MainWindow::indexLegacyFiles()
+{
+    QPointer<MainWindow> self(this);
+    const std::atomic_bool* cancel = &m_shutdownRequested;
+    m_importPool.start(QRunnable::create([self, cancel]() {
+        int indexedCount = 0;
+        while (self && !cancel->load(std::memory_order_relaxed)) {
+            const QList<FileRecord> pending = DatabaseManager::instance().getFilesNeedingContentIndex(8);
+            if (pending.isEmpty())
+                break;
+
+            QList<FileRecord> batch;
+            batch.reserve(pending.size());
+            for (FileRecord record : pending) {
+                if (!self || cancel->load(std::memory_order_relaxed))
+                    return;
+                const QFileInfo info(record.filePath);
+                if (info.exists() && info.isFile()) {
+                    record.fileSize = info.size();
+                    record.modifiedAt = info.lastModified().toString(Qt::ISODateWithMs);
+                    record.fullText = FileManager::extractContent(record.filePath, &record.contentTruncated, cancel);
+                    if (cancel->load(std::memory_order_relaxed))
+                        return;
+                    record.summary = record.fullText.isEmpty()
+                        ? FileManager::noTextSummary(record.filePath)
+                        : FileManager::makeSummary(record.fullText);
+                } else {
+                    record.fileSize = 0;
+                    record.modifiedAt.clear();
+                    record.fullText.clear();
+                    record.contentTruncated = false;
+                    record.summary = FileManager::noTextSummary(record.filePath);
+                }
+                record.contentExtracted = true;
+                batch.append(record);
+            }
+
+            const int saved = DatabaseManager::instance().addRecords(batch);
+            if (saved != batch.size())
+                break;
+            indexedCount += saved;
+            if (self && indexedCount > 0 && indexedCount % 32 == 0) {
+                QMetaObject::invokeMethod(self.data(), [self, indexedCount]() {
+                    if (self)
+                        self->setStatus(QStringLiteral("正在补全旧文件全文索引 · 已处理 %1 项")
+                                            .arg(indexedCount));
+                }, Qt::QueuedConnection);
+            }
+        }
+
+        if (!self || cancel->load(std::memory_order_relaxed))
+            return;
+        QMetaObject::invokeMethod(self.data(), [self, indexedCount]() {
+            if (!self || self->m_isQuitting)
+                return;
+            if (indexedCount > 0) {
+                self->runSearch();
+                self->setStatus(QStringLiteral("旧文件全文索引已补全 · %1 项")
+                                    .arg(indexedCount));
+            }
         }, Qt::QueuedConnection);
     }));
 }
@@ -409,20 +519,32 @@ void MainWindow::setViewMode(bool compact)
 
 void MainWindow::reextractSummary(const FileRecord& record)
 {
+    if (m_isQuitting)
+        return;
     QPointer<MainWindow> self(this);
-    setStatus(QStringLiteral("正在重新提取摘要…"));
-    m_importPool.start(QRunnable::create([self, record]() {
+    const std::atomic_bool* cancel = &m_shutdownRequested;
+    setStatus(QStringLiteral("正在重新提取正文和摘要…"));
+    m_importPool.start(QRunnable::create([self, record, cancel]() {
         FileRecord updated = record;
-        updated.summary = FileManager::extractSummary(record.filePath);
+        updated.fullText = FileManager::extractContent(record.filePath, &updated.contentTruncated, cancel);
+        if (cancel->load(std::memory_order_relaxed))
+            return;
+        updated.contentExtracted = true;
+        const QFileInfo info(record.filePath);
+        updated.fileSize = info.size();
+        updated.modifiedAt = info.lastModified().toString(Qt::ISODateWithMs);
+        updated.summary = updated.fullText.isEmpty()
+            ? FileManager::noTextSummary(record.filePath)
+            : FileManager::makeSummary(updated.fullText);
         const bool saved = DatabaseManager::instance().addRecord(updated);
-        if (!self)
+        if (!self || cancel->load(std::memory_order_relaxed))
             return;
         QMetaObject::invokeMethod(self.data(), [self, saved]() {
-            if (!self)
+            if (!self || self->m_isQuitting)
                 return;
             self->runSearch();
-            self->setStatus(saved ? QStringLiteral("摘要已更新")
-                                 : QStringLiteral("摘要提取完成，但索引写入失败"));
+            self->setStatus(saved ? QStringLiteral("正文和摘要已更新")
+                                 : QStringLiteral("提取完成，但索引写入失败"));
         }, Qt::QueuedConnection);
     }));
 }
@@ -464,7 +586,7 @@ void MainWindow::onFileContextMenu(const QPoint& pos)
     QAction* folderAction = menu.addAction(QStringLiteral("打开所在文件夹"));
     QAction* copyAction = menu.addAction(QStringLiteral("复制文件路径"));
     menu.addSeparator();
-    QAction* reextractAction = menu.addAction(QStringLiteral("重新提取摘要"));
+    QAction* reextractAction = menu.addAction(QStringLiteral("重新提取正文和摘要"));
     QAction* deleteAction = menu.addAction(QStringLiteral("从文件库删除并删除原文件"));
     deleteAction->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
 
@@ -546,10 +668,7 @@ void MainWindow::setupTray()
 
     trayMenu->addSeparator();
     QAction* quitAction = trayMenu->addAction(QStringLiteral("退出 WorkDesk"));
-    connect(quitAction, &QAction::triggered, this, [this]() {
-        m_isQuitting = true;
-        qApp->quit();
-    });
+    connect(quitAction, &QAction::triggered, this, &MainWindow::requestShutdown);
 
     m_trayIcon->setContextMenu(trayMenu);
     connect(m_trayIcon, &QSystemTrayIcon::activated, this,
@@ -561,6 +680,95 @@ void MainWindow::setupTray()
         }
     });
     m_trayIcon->show();
+}
+
+
+double MainWindow::currentNightWeight() const
+{
+    const QTime now = QTime::currentTime();
+    const int minuteOfDay = now.hour() * 60 + now.minute();
+
+    // Fixed local civil-time schedule (no location or network dependency):
+    // dawn 05:00-07:00 and dusk 17:00-19:00, linearly blended.
+    constexpr int dawnStart = 5 * 60;
+    constexpr int sunrise = 7 * 60;
+    constexpr int sunset = 17 * 60;
+    constexpr int duskEnd = 19 * 60;
+
+    if (minuteOfDay < dawnStart || minuteOfDay >= duskEnd)
+        return 1.0;
+    if (minuteOfDay < sunrise)
+        return 1.0 - static_cast<double>(minuteOfDay - dawnStart) / (sunrise - dawnStart);
+    if (minuteOfDay < sunset)
+        return 0.0;
+    return static_cast<double>(minuteOfDay - sunset) / (duskEnd - sunset);
+}
+
+void MainWindow::updateThemeForCurrentTime()
+{
+    if (m_isQuitting)
+        return;
+
+    const double nightWeight = currentNightWeight();
+    setStyleSheet(themeStyleSheet(nightWeight));
+    if (m_fileView)
+        m_fileView->setProperty("nightWeight", nightWeight);
+
+    if (m_themeIndicatorLabel) {
+        const bool night = nightWeight >= 0.5;
+        m_themeIndicatorLabel->setText(night
+            ? QStringLiteral("☾  夜间 · 自动")
+            : QStringLiteral("☀  日间 · 自动"));
+        m_themeIndicatorLabel->setToolTip(QStringLiteral(
+            "自动主题 · 本地时间 05:00–07:00 日出渐亮，17:00–19:00 日落渐暗"));
+    }
+    if (m_fileView)
+        m_fileView->viewport()->update();
+}
+
+void MainWindow::requestShutdown()
+{
+    if (m_isQuitting)
+        return;
+
+    m_isQuitting = true;
+    m_shutdownRequested.store(true, std::memory_order_relaxed);
+
+    if (m_searchTimer)
+        m_searchTimer->stop();
+    if (m_themeTimer)
+        m_themeTimer->stop();
+    // Keep the tray icon visible while an active native OCR/render operation
+    // reaches its cancellation checkpoint. Its tooltip makes the in-progress
+    // shutdown visible instead of looking like a failed Exit command.
+    if (m_trayIcon && m_trayIcon->isVisible()) {
+        m_trayIcon->setToolTip(QStringLiteral("WorkDesk · 正在安全退出…"));
+        hide();
+    } else {
+        setStatus(QStringLiteral("正在安全退出 · 停止后台任务…"));
+        setEnabled(false);
+    }
+
+    // Drop work that has not started and ask active import/OCR tasks to stop
+    // at their next cancellation checkpoint.
+    m_searchPool.clear();
+    m_importPool.clear();
+
+    if (!m_shutdownTimer) {
+        m_shutdownTimer = new QTimer(this);
+        m_shutdownTimer->setInterval(100);
+        m_shutdownTimer->setTimerType(Qt::CoarseTimer);
+        connect(m_shutdownTimer, &QTimer::timeout, this, [this]() {
+            if (m_searchPool.activeThreadCount() == 0
+                && m_importPool.activeThreadCount() == 0) {
+                m_shutdownTimer->stop();
+                if (m_trayIcon)
+                    m_trayIcon->hide();
+                QCoreApplication::exit(0);
+            }
+        });
+    }
+    m_shutdownTimer->start();
 }
 
 void MainWindow::setAutoStart(bool enable)
@@ -582,15 +790,23 @@ void MainWindow::setAutoStart(bool enable)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_isQuitting || !m_trayIcon || !m_trayIcon->isVisible()) {
+    if (m_isQuitting) {
         event->accept();
+        return;
+    }
+
+    if (!m_trayIcon || !m_trayIcon->isVisible()) {
+        // Without a tray icon there is no discoverable way to quit later.
+        // Treat the window close as a real shutdown and cancel background work.
+        event->ignore();
+        requestShutdown();
         return;
     }
 
     hide();
     event->ignore();
     m_trayIcon->showMessage(QStringLiteral("WorkDesk 仍在运行"),
-                            QStringLiteral("程序已最小化到系统托盘。"),
+                            QStringLiteral("程序已最小化到系统托盘。选择“退出 WorkDesk”可完全结束程序。"),
                             QSystemTrayIcon::Information, 1800);
 }
 

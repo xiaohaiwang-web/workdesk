@@ -1,114 +1,79 @@
-# WorkDesk
+# WorkDesk v0.2.0
 
-**WorkDesk v0.1.0** 是一款面向 Windows 的本地文件整理与检索桌面工具，基于 C++17、Qt 6.11 Widgets、SQLite 和 CMake 构建。
+WorkDesk 是一款面向 Windows 的本地文件管理与全文搜索工具。文件整理、正文提取、OCR 和检索均在本机完成；普通文件搜索不依赖网络或大模型服务。
 
-它希望给用户一种进入独立桌面工作区的感觉：文件以图标网格或紧凑列表呈现，左侧提供分类导航，右侧提供文件检查器。界面参考 Finder / macOS 的空间布局，但 WorkDesk 本身仍是 Windows 上运行的 Qt Widgets 程序，并不是 macOS 移植版。
+## v0.2.0 本次发布重点
 
-## v0.1.0 功能
+- **更广的办公格式覆盖**：Word、Excel、PowerPoint、OpenDocument、Visio、RTF、CSV、EPUB、XPS、MHTML、DBF 等。支持边界按 `docs/SUPPORTED_FORMATS.md` 区分为直接提取、Office/WPS COM 和仅归档。
+- **旧版 Office 正文提取**：`.doc/.xls/.ppt` 在本机对应 Microsoft Office COM 可用时尝试只读提取；不要求 WorkDesk 安装 Office。
+- **PDF 正文与扫描件 OCR**：文字型 PDF 使用 Aspose.PDF 逐页提取；扫描页按需使用 Tesseract。完整版随包提供 `chi_sim` 简体中文和 `eng` 英文模型。
+- **OCR 模型复用**：优先动态加载 Tesseract C API，同一份 PDF 只初始化一次 OCR 引擎和语言模型，页面间复用；C API 不可用时回退命令行 OCR。
+- **全文与摘要分离**：摘要约 1,000 字用于结果预览；可提取正文独立进入 SQLite/FTS5，PDF 正文有单独资源上限。
+- **日夜自适应主题**：本地时间 05:00–07:00 渐亮、17:00–19:00 渐暗，每 30 分钟更新一次，不运行高频动画。
+- **安全退出**：窗口关闭可最小化到系统托盘；托盘“退出 WorkDesk”会取消后台任务、等待 OCR/解析任务到达安全退出点后结束进程。
 
-- **Finder 风格工作区**：自绘系统栏、红黄绿窗口控制点、侧边分类导航、文件图标网格、紧凑列表和右侧文件检查器。
-- **文件导入**：支持拖放文件和文件选择器导入；按扩展名分类，并移动到 WorkDesk 本地文件库。
-- **分类浏览**：支持 PDF、Word、Excel、图片、文本与代码以及其他文件类别。
-- **文件操作**：双击打开文件；右键菜单提供打开、打开所在文件夹、复制路径、重新提取摘要和删除文件等操作。
-- **本地搜索**：通过现有 `DatabaseManager` 访问 SQLite 搜索能力。UI 同时兼容旧版 `searchFiles()` 和 Search Core v2 的 `searchFilesPage()` 接口；使用分页 API 时，当前工作区加载首批最多 200 条结果。
-- **文档摘要**：对当前支持的文本、PDF、DOCX 和 DOC 文件提取摘要。DOC 格式需要本机 Word 或 WPS 的 COM 自动化能力。
-- **后台任务**：搜索输入防抖；文件移动和摘要提取由后台任务队列处理。
-- **系统托盘**：支持最小化到托盘、从托盘恢复，以及 Windows 开机启动选项。
-- **快捷操作**：`Ctrl + K` 聚焦搜索框；底部 Dock 提供常用入口。
+## 文件处理边界
 
-## 搜索能力与当前边界
+文件扩展名被识别或归类，不代表软件一定能够提取其内部正文。加密文件、损坏文件、复杂格式、缺少本机 Office 转换器的旧版文件可能只保留文件名索引。独立图片本阶段只做收录和分类，不进行图片 OCR 或以图搜图。
 
-v0.1.0 保留 SQLite 本地检索，不依赖云服务或大模型 API。需要区分“当前 UI 已接入的检索”与“后续完整搜索能力”：
+完整矩阵见 [`docs/SUPPORTED_FORMATS.md`](docs/SUPPORTED_FORMATS.md)。
 
-- 当前 UI 会调用项目中已有的 `DatabaseManager` 搜索接口。旧接口按原有数据库实现检索；Search Core v2 接口可返回有界结果页。
-- 本次 Finder UI 改造没有重新定义数据库 Schema，也没有把 AI 搜索、Embedding 向量检索或模型重排序作为已交付功能。
-- Search Core v2 虽然预留了全文字段、trigram 检索和按需内容分块 API，但完整的文件内容提取/历史文件补索引流程仍需要在 UI 导入与后台索引流程中进一步联调。因此，v0.1.0 不承诺所有文件正文都已建立全文索引。
-- 1–2 个字符的查询可能走较慢的兼容扫描路径；实际搜索速度取决于当前仓库采用的 `src/core` 版本、SQLite/FTS5 能力、索引完成情况和文件库规模。
-- 当前 UI 使用 Search Core v2 接口时只加载首批最多 200 条结果，界面尚未提供完整的翻页控件。
+## Windows 运行与分发
 
-因此，本版本适合作为 WorkDesk 的首个桌面体验预览版，不应宣传为已经完成大规模中文全文搜索或 AI 语义搜索的最终产品。
+目标平台：Windows 10/11 x64。
 
-## 支持的文件类型
+- **完整安装（默认）**：管理员安装到 Program Files；包含 WorkDesk、Qt 运行库、Tesseract OCR DLL、`chi_sim`/`eng` 模型和 Microsoft VC++ Redistributable（系统缺少时安装）。
+- **精简安装**：安装程序可选择不安装 OCR 组件；普通文件搜索和文字型 PDF 解析仍可使用。安装文件本身仍包含压缩后的可选 OCR 载荷。
+- **便携 ZIP**：包含完整 OCR 运行时，解压后运行 `workdesk.exe`；不要单独拷贝 EXE。
 
-文件分类当前覆盖：
+OCR 是应用私有组件，WorkDesk 优先使用程序目录下的 `ocr/tesseract.exe` 和 `ocr/tessdata`，不要求终端用户安装 Tesseract、修改 PATH 或配置环境变量。
 
-- PDF 文档
-- Word 文档（DOC、DOCX）
-- Excel 表格（XLS、XLSX，当前按类型归档）
-- 常见图片格式（JPG、JPEG、PNG、GIF，当前按类型归档）
-- 常见文本、代码和配置文件
-- 其他文件
+## 开发环境
 
-正文提取能力不等于分类能力。Excel、图片和扫描版 PDF 当前不保证可以提取可搜索正文；本版本不包含 OCR。
-
-## 技术栈
-
-- C++17
-- Qt 6.11 Widgets / Gui / Sql
-- SQLite / FTS5（具体索引能力取决于仓库当前 `src/core` 实现）
+- Visual Studio 2022（MSVC 2022 x64）
 - CMake 3.21+
-- Visual Studio 2022 / MSVC x64
-- Aspose.PDF FOSS for C++、libzip、pugixml、zlib
+- Qt 6.11.2 MSVC 2022 x64
+- Inno Setup 6/7（用于生成单文件安装包）
+- 开发机安装 UB Mannheim Tesseract Windows x64，且 `tessdata` 至少包含 `chi_sim.traineddata` 和 `eng.traineddata`
 
-## 构建环境
+CMake Preset 默认 Qt 路径：`C:/Qt/6.11.2/msvc2022_64`。
 
-- Windows 10 / Windows 11 x64
-- Visual Studio 2022，安装“使用 C++ 的桌面开发”工作负载
-- CMake 3.21 或更新版本
-- Qt 6.11 MSVC 2022 x64
-- Windows SDK
-
-仓库中的 `CMakePresets.json` 默认 Qt 路径为：
-
-```text
-C:/Qt/6.11.2/msvc2022_64
-```
-
-如 Qt 安装位置不同，请修改 `CMAKE_PREFIX_PATH`。
-
-## 编译
-
-Debug：
+### 编译
 
 ```powershell
 cmake --preset msvc2022-debug
 cmake --build --preset msvc2022-debug
-```
-
-Release：
-
-```powershell
 cmake --build build --config Release
 ```
 
-本 Release 源码覆盖包不包含完整 `third_party/` 目录，也不包含预编译 EXE/DLL。请在完整项目仓库中构建。
+### 生成 Release 包
 
-## 数据位置与文件行为
+在仓库根目录运行：
 
-默认数据目录为：
-
-```text
-%ProgramData%\WorkDesk\
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
-数据库文件：
+如 Qt 安装位置不同：
 
-```text
-%ProgramData%\WorkDesk\workdesk.db
+```powershell
+.\scripts\package-windows.ps1 -QtRoot "C:\Qt\6.11.2\msvc2022_64"
 ```
 
-程序会在该目录下按类别保存导入文件。导入不是创建快捷方式：WorkDesk 会将源文件移动到文件库；如果目标位置已有同名文件，会尝试使用带时间戳的文件名避免覆盖。
+如 Tesseract 不在默认安装路径：
 
-右键菜单中的删除操作会删除文件库中的实际文件，而不只是从界面隐藏。执行删除前请核对提示中的路径，并在升级或迁移数据库前做好备份。
+```powershell
+.\scripts\package-windows.ps1 -TesseractRoot "C:\Program Files\Tesseract-OCR"
+```
 
-## v0.1.0 尚未包含
+脚本先完成 Release 编译，再检查 OCR DLL 和语言模型、运行 `tesseract.exe --version/--list-langs`，最后生成便携 ZIP、Inno Setup 安装程序和 SHA-256 清单。
 
-- 完整且已验证的历史文件全文补索引流程。
-- 中文拼音检索、OCR 和 Excel 单元格内容解析。
-- 面向超大文件库的端到端压力测试与性能承诺。
-- AI Provider 配置页、API Key 安全保存、自然语言搜索和 AI 重排序。
-- 完整安装程序、自动更新和便携版依赖部署。
+详细打包流程见 [`docs/WINDOWS_RELEASE.md`](docs/WINDOWS_RELEASE.md)。发布前验收见 [`docs/RELEASE_TEST_PLAN.md`](docs/RELEASE_TEST_PLAN.md)。
 
-## 开源协议
+## 第三方组件
 
-项目当前 README 声明采用 MIT License。对外发布时，请确保仓库根目录包含与该声明对应的 `LICENSE` 文件及正确的版权信息。
+WorkDesk 使用 Qt 6、Aspose.PDF FOSS、libzip、zlib、pugixml，以及可选/随包分发的 Tesseract、Leptonica 和语言模型。运行时以独立文件形式分发，不静态合并进 `workdesk.exe`。请保留 `licenses/` 与安装包内 `ocr/licenses/` 的许可和声明文件。Tesseract 使用 Apache 2.0 许可，Leptonica 使用 BSD 2-Clause；其余运行时依赖分别遵循各自许可。<https://github.com/tesseract-ocr/tesseract> <https://github.com/DanBloomberg/leptonica>
+
+## 项目
+
+https://github.com/xiaohaiwang-web/workdesk

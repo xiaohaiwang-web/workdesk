@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "FileListModel.h"
+#include "workdesk/core/FileManager.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -23,6 +24,7 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSizePolicy>
 #include <QSortFilterProxyModel>
 #include <QStackedWidget>
@@ -32,16 +34,76 @@
 #include <QVBoxLayout>
 
 namespace {
+QColor blendThemeColor(const QColor& dayColor, double nightWeight)
+{
+    QColor hsl = dayColor.toHsl();
+    const int dayLightness = hsl.lightness();
+    int targetLightness = qBound(34, 26 + qRound((255 - dayLightness) * 0.72), 218);
+    int targetSaturation = qRound(hsl.saturation() * 0.68);
+    if (hsl.saturation() > 135)
+        targetLightness = qMax(targetLightness, 108);
+    hsl.setHsl(hsl.hue(), targetSaturation, targetLightness, dayColor.alpha());
+
+    const double w = qBound(0.0, nightWeight, 1.0);
+    auto channel = [w](int day, int night) {
+        return qBound(0, qRound(day + (night - day) * w), 255);
+    };
+    return QColor(channel(dayColor.red(), hsl.red()),
+                  channel(dayColor.green(), hsl.green()),
+                  channel(dayColor.blue(), hsl.blue()),
+                  channel(dayColor.alpha(), hsl.alpha()));
+}
+
+QString adaptStyleSheetToNight(QString styleSheet, double nightWeight)
+{
+    static const QRegularExpression colorPattern(QStringLiteral("#[0-9A-Fa-f]{6}"));
+    QList<QPair<int, int>> spans;
+    QList<QString> replacements;
+    auto it = colorPattern.globalMatch(styleSheet);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const QColor day(match.captured());
+        replacements.append(blendThemeColor(day, nightWeight).name(QColor::HexRgb));
+        spans.append({match.capturedStart(), match.capturedLength()});
+    }
+    for (qsizetype i = spans.size() - 1; i >= 0; --i)
+        styleSheet.replace(spans.at(i).first, spans.at(i).second, replacements.at(i));
+
+    const QColor dockDay(QStringLiteral("#FFFFFF"));
+    const QColor dockNight(QStringLiteral("#252E3A"));
+    auto blendSimple = [nightWeight](const QColor& a, const QColor& b) {
+        const double w = qBound(0.0, nightWeight, 1.0);
+        return QColor(qRound(a.red() + (b.red() - a.red()) * w),
+                      qRound(a.green() + (b.green() - a.green()) * w),
+                      qRound(a.blue() + (b.blue() - a.blue()) * w));
+    };
+    styleSheet.replace(QStringLiteral("rgba(255,255,255,245)"),
+                       blendSimple(dockDay, dockNight).name(QColor::HexRgb));
+
+    // The global hex-color interpolation also darkens #FFFFFF. Keep primary
+    // action labels white so they remain readable on the blue action surface.
+    styleSheet += QStringLiteral("\nQPushButton#PrimaryButton { color: #FFFFFF; }\n");
+    return styleSheet;
+}
+
 QColor fileAccent(const QString& extension)
 {
     const QString ext = extension.toLower();
-    if (ext == QStringLiteral("pdf")) return QColor(QStringLiteral("#D45C58"));
-    if (ext == QStringLiteral("doc") || ext == QStringLiteral("docx"))
+    if (ext == QStringLiteral("pdf") || ext == QStringLiteral("xps") || ext == QStringLiteral("oxps"))
+        return QColor(QStringLiteral("#D45C58"));
+    if (ext == QStringLiteral("doc") || ext == QStringLiteral("docx")
+        || ext == QStringLiteral("docm") || ext == QStringLiteral("dotx")
+        || ext == QStringLiteral("dotm") || ext == QStringLiteral("odt")
+        || ext == QStringLiteral("ott") || ext == QStringLiteral("rtf"))
         return QColor(QStringLiteral("#3979C9"));
-    if (ext == QStringLiteral("xls") || ext == QStringLiteral("xlsx"))
+    if (ext == QStringLiteral("xls") || ext == QStringLiteral("xlsx")
+        || ext == QStringLiteral("xlsm") || ext == QStringLiteral("xlsb")
+        || ext == QStringLiteral("ods") || ext == QStringLiteral("csv"))
         return QColor(QStringLiteral("#32866B"));
-    if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg")
-        || ext == QStringLiteral("jpeg") || ext == QStringLiteral("gif"))
+    if (ext == QStringLiteral("ppt") || ext == QStringLiteral("pptx")
+        || ext == QStringLiteral("pptm") || ext == QStringLiteral("odp"))
+        return QColor(QStringLiteral("#C77A42"));
+    if (FileManager::isImageFile(QStringLiteral("file.") + ext))
         return QColor(QStringLiteral("#8A72C4"));
     if (ext == QStringLiteral("zip") || ext == QStringLiteral("7z")
         || ext == QStringLiteral("rar"))
@@ -79,14 +141,19 @@ public:
         painter->setRenderHint(QPainter::TextAntialiasing, true);
 
         const bool compact = option.widget && option.widget->property("compactView").toBool();
+        const double nightWeight = option.widget
+            ? option.widget->property("nightWeight").toDouble() : 0.0;
+        const auto themed = [nightWeight](const QString& dayHex) {
+            return blendThemeColor(QColor(dayHex), nightWeight);
+        };
         const bool selected = option.state.testFlag(QStyle::State_Selected);
         const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
         const QRectF itemRect = QRectF(option.rect).adjusted(2.0, 2.0, -2.0, -2.0);
 
         // Finder-style items remain visually quiet until hover or selection.
         if (selected || hovered) {
-            const QColor fill = selected ? QColor(QStringLiteral("#E2ECFC"))
-                                         : QColor(QStringLiteral("#F1F4F8"));
+            const QColor fill = selected ? themed(QStringLiteral("#E2ECFC"))
+                                         : themed(QStringLiteral("#F1F4F8"));
             painter->setPen(Qt::NoPen);
             painter->setBrush(fill);
             painter->drawRoundedRect(itemRect, 8.0, 8.0);
@@ -98,7 +165,7 @@ public:
         const QString filePath = index.data(FileListModel::FilePathRole).toString();
         const QColor accent = fileAccent(extension);
 
-        const auto drawDocumentIcon = [painter, accent, extension](const QRectF& rect) {
+        const auto drawDocumentIcon = [painter, accent, extension, themed](const QRectF& rect) {
             QRectF page = rect.adjusted(3.0, 1.0, -4.0, -2.0);
             QPainterPath pagePath;
             pagePath.moveTo(page.left() + 4.0, page.top());
@@ -112,8 +179,8 @@ public:
             pagePath.quadTo(page.left(), page.top(), page.left() + 4.0, page.top());
             pagePath.closeSubpath();
 
-            painter->setPen(QPen(QColor(QStringLiteral("#D5DAE2")), 0.9));
-            painter->setBrush(QColor(QStringLiteral("#FFFFFF")));
+            painter->setPen(QPen(themed(QStringLiteral("#D5DAE2")), 0.9));
+            painter->setBrush(themed(QStringLiteral("#FFFFFF")));
             painter->drawPath(pagePath);
 
             QPainterPath fold;
@@ -143,10 +210,10 @@ public:
                                                   : extension.left(4).toUpper());
         };
 
-        const auto drawImageIcon = [painter, accent](const QRectF& rect) {
+        const auto drawImageIcon = [painter, accent, themed](const QRectF& rect) {
             QRectF imageRect = rect.adjusted(2.0, 7.0, -2.0, -6.0);
-            painter->setPen(QPen(QColor(QStringLiteral("#D5DAE2")), 1.0));
-            painter->setBrush(QColor(QStringLiteral("#FFFFFF")));
+            painter->setPen(QPen(themed(QStringLiteral("#D5DAE2")), 1.0));
+            painter->setBrush(themed(QStringLiteral("#FFFFFF")));
             painter->drawRoundedRect(imageRect, 5.0, 5.0);
             painter->save();
             painter->setClipRect(imageRect.adjusted(2.0, 2.0, -2.0, -2.0));
@@ -167,8 +234,7 @@ public:
 
         if (compact) {
             const QRectF iconRect(itemRect.left() + 12.0, itemRect.center().y() - 23.0, 34.0, 46.0);
-            const bool isImage = extension == QStringLiteral("png") || extension == QStringLiteral("jpg")
-                || extension == QStringLiteral("jpeg") || extension == QStringLiteral("gif");
+            const bool isImage = FileManager::isImageFile(filePath);
             if (isImage)
                 drawImageIcon(iconRect);
             else
@@ -180,7 +246,7 @@ public:
             nameFont.setPixelSize(11);
             nameFont.setWeight(QFont::DemiBold);
             painter->setFont(nameFont);
-            painter->setPen(QColor(QStringLiteral("#283243")));
+            painter->setPen(themed(QStringLiteral("#283243")));
             painter->drawText(QRectF(textLeft, itemRect.top() + 10.0, textWidth, 19.0),
                               Qt::AlignLeft | Qt::AlignVCenter,
                               QFontMetrics(nameFont).elidedText(fileName, Qt::ElideRight,
@@ -190,7 +256,7 @@ public:
             detailFont.setPixelSize(9);
             detailFont.setWeight(QFont::Normal);
             painter->setFont(detailFont);
-            painter->setPen(QColor(QStringLiteral("#8A93A0")));
+            painter->setPen(themed(QStringLiteral("#8A93A0")));
             painter->drawText(QRectF(textLeft, itemRect.top() + 34.0, textWidth, 15.0),
                               Qt::AlignLeft | Qt::AlignVCenter,
                               QFontMetrics(detailFont).elidedText(QDir::toNativeSeparators(filePath),
@@ -202,8 +268,7 @@ public:
                               Qt::AlignRight | Qt::AlignVCenter, meta);
         } else {
             const QRectF iconRect(itemRect.center().x() - 27.0, itemRect.top() + 9.0, 54.0, 68.0);
-            const bool isImage = extension == QStringLiteral("png") || extension == QStringLiteral("jpg")
-                || extension == QStringLiteral("jpeg") || extension == QStringLiteral("gif");
+            const bool isImage = FileManager::isImageFile(filePath);
             if (isImage)
                 drawImageIcon(iconRect);
             else
@@ -213,7 +278,7 @@ public:
             nameFont.setPixelSize(10);
             nameFont.setWeight(QFont::Medium);
             painter->setFont(nameFont);
-            painter->setPen(QColor(QStringLiteral("#303A49")));
+            painter->setPen(themed(QStringLiteral("#303A49")));
             const QRect nameRect(static_cast<int>(itemRect.left() + 5.0),
                                  static_cast<int>(itemRect.top() + 82.0),
                                  static_cast<int>(itemRect.width() - 10.0), 31);
@@ -224,7 +289,7 @@ public:
             metaFont.setPixelSize(8);
             metaFont.setWeight(QFont::Normal);
             painter->setFont(metaFont);
-            painter->setPen(QColor(QStringLiteral("#929AA6")));
+            painter->setPen(themed(QStringLiteral("#929AA6")));
             const QString meta = category.isEmpty() ? extension.toUpper() : category;
             painter->drawText(QRectF(itemRect.left() + 4.0, itemRect.bottom() - 17.0,
                                      itemRect.width() - 8.0, 12.0),
@@ -252,9 +317,9 @@ QIcon dockGlyph(const QString& glyph, const QColor& color)
 }
 }
 
-QString MainWindow::themeStyleSheet()
+QString MainWindow::themeStyleSheet(double nightWeight)
 {
-    return QStringLiteral(R"(
+    const QString dayStyleSheet = QStringLiteral(R"(
         QMainWindow, QWidget {
             font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
             color: #303846;
@@ -284,6 +349,13 @@ QString MainWindow::themeStyleSheet()
             color: #557A68; background: #EEF5F0; border: 1px solid #DCE9E0;
             border-radius: 10px; padding: 4px 9px; font-size: 9px; font-weight: 600;
         }
+        QLabel#EngineStatus[unavailable="true"] {
+            color: #A65A54; background: #FFF1EF; border: 1px solid #F2D8D4;
+        }
+        QFrame#SystemBarSeparator { color: #E3E6EA; }
+        QFrame#SidebarSeparator {
+            color: #E3E5E9; background: #E3E5E9; max-height: 1px;
+        }
         QFrame#Sidebar { background: #F7F7F9; border-right: 1px solid #E3E5E9; }
         QLabel#SidebarCaption {
             color: #989EA8; font-size: 9px; font-weight: 700;
@@ -300,6 +372,10 @@ QString MainWindow::themeStyleSheet()
         }
         QLabel#SidebarFootTitle { color: #9AA1AB; font-size: 9px; font-weight: 650; }
         QLabel#SidebarFootText { color: #707A88; font-size: 9px; }
+        QLabel#ThemeIndicator {
+            color: #9A783F; background: transparent; font-size: 9px;
+            padding: 3px 0;
+        }
         QFrame#MainArea { background: #F2F3F5; }
         QLabel#PageTitle { color: #272F3B; font-size: 16px; font-weight: 680; }
         QLabel#PageSubtitle { color: #9299A4; font-size: 9px; }
@@ -375,6 +451,7 @@ QString MainWindow::themeStyleSheet()
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
     )");
+    return adaptStyleSheetToNight(dayStyleSheet, nightWeight);
 }
 
 QWidget* MainWindow::createSystemBar()
@@ -411,9 +488,9 @@ QWidget* MainWindow::createSystemBar()
     layout->addWidget(brandName);
 
     auto* separator = new QFrame(bar);
+    separator->setObjectName(QStringLiteral("SystemBarSeparator"));
     separator->setFrameShape(QFrame::VLine);
     separator->setFixedHeight(16);
-    separator->setStyleSheet(QStringLiteral("color: #E3E6EA;"));
     layout->addWidget(separator);
 
     auto* fileMenuButton = new QToolButton(bar);
@@ -427,10 +504,7 @@ QWidget* MainWindow::createSystemBar()
     connect(refreshAction, &QAction::triggered, this, &MainWindow::runSearch);
     fileMenu->addSeparator();
     QAction* exitAction = fileMenu->addAction(QStringLiteral("退出 WorkDesk"));
-    connect(exitAction, &QAction::triggered, this, [this]() {
-        m_isQuitting = true;
-        QApplication::quit();
-    });
+    connect(exitAction, &QAction::triggered, this, &MainWindow::requestShutdown);
     fileMenuButton->setMenu(fileMenu);
     layout->addWidget(fileMenuButton);
 
@@ -484,14 +558,21 @@ QWidget* MainWindow::createSidebar()
     addNavigation(QStringLiteral("▤   PDF 文稿"), QStringLiteral("PDF文档"));
     addNavigation(QStringLiteral("▤   Word 文稿"), QStringLiteral("Word文档"));
     addNavigation(QStringLiteral("▦   Excel 表格"), QStringLiteral("Excel表格"));
+    addNavigation(QStringLiteral("▧   演示文稿"), QStringLiteral("演示文稿"));
     addNavigation(QStringLiteral("▧   图片"), QStringLiteral("图片"));
+    addNavigation(QStringLiteral("✉   邮件"), QStringLiteral("邮件"));
+    addNavigation(QStringLiteral("◇   图形与设计"), QStringLiteral("图形与设计"));
+    addNavigation(QStringLiteral("▧   电子书"), QStringLiteral("电子书"));
+    addNavigation(QStringLiteral("▦   数据库文件"), QStringLiteral("数据库文件"));
+    addNavigation(QStringLiteral("▤   其他办公文档"), QStringLiteral("其他办公文档"));
+    addNavigation(QStringLiteral("▱   网页归档"), QStringLiteral("网页归档"));
     addNavigation(QStringLiteral("⌘   文本与代码"), QStringLiteral("文本代码"));
     addNavigation(QStringLiteral("⋯   其他文件"), QStringLiteral("其他"));
 
     layout->addStretch();
     auto* rule = new QFrame(sidebar);
+    rule->setObjectName(QStringLiteral("SidebarSeparator"));
     rule->setFrameShape(QFrame::HLine);
-    rule->setStyleSheet(QStringLiteral("color: #E3E5E9; background: #E3E5E9; max-height: 1px;"));
     layout->addWidget(rule);
     layout->addSpacing(8);
     auto* deviceTitle = new QLabel(QStringLiteral("本地位置"), sidebar);
@@ -500,6 +581,10 @@ QWidget* MainWindow::createSidebar()
     deviceValue->setObjectName(QStringLiteral("SidebarFootText"));
     layout->addWidget(deviceTitle);
     layout->addWidget(deviceValue);
+    m_themeIndicatorLabel = new QLabel(QStringLiteral("☀  日间 · 自动"), sidebar);
+    m_themeIndicatorLabel->setObjectName(QStringLiteral("ThemeIndicator"));
+    layout->addSpacing(5);
+    layout->addWidget(m_themeIndicatorLabel);
     return sidebar;
 }
 
