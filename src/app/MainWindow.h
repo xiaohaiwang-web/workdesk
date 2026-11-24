@@ -41,7 +41,7 @@ protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
-    static QString themeStyleSheet();
+    static QString themeStyleSheet(double nightWeight);
     QWidget* createSystemBar();
     QWidget* createSidebar();
     QWidget* createMainContent();
@@ -51,6 +51,7 @@ private:
     void applySearchResults(quint64 generation, const QString& query,
                             const QList<FileRecord>& results);
     void importFiles(const QStringList& filePaths);
+    void indexLegacyFiles();
     void chooseFiles();
     void reextractSummary(const FileRecord& record);
     void updateContentState();
@@ -63,6 +64,9 @@ private:
 
     void setupTray();
     void setAutoStart(bool enable);
+    double currentNightWeight() const;
+    void updateThemeForCurrentTime();
+    void requestShutdown();
 
 private slots:
     void onFileActivated(const QModelIndex& index);
@@ -86,6 +90,7 @@ private:
     QLabel* m_detailSummaryLabel = nullptr;
     QLabel* m_detailExtensionLabel = nullptr;
     QLabel* m_detailMetaLabel = nullptr;
+    QLabel* m_themeIndicatorLabel = nullptr;
     QPushButton* m_openSelectedButton = nullptr;
     QToolButton* m_gridModeButton = nullptr;
     QToolButton* m_listModeButton = nullptr;
@@ -93,6 +98,8 @@ private:
     QHash<QString, QPushButton*> m_navigationButtons;
 
     QTimer* m_searchTimer = nullptr;
+    QTimer* m_themeTimer = nullptr;
+    QTimer* m_shutdownTimer = nullptr;
     QThreadPool m_searchPool;
     QThreadPool m_importPool;
     std::atomic<quint64> m_searchGeneration{0};
@@ -103,4 +110,5 @@ private:
     QString m_activeCategoryLabel = QStringLiteral("全部文件");
     bool m_isQuitting = false;
     bool m_databaseReady = false;
+    std::atomic_bool m_shutdownRequested{false};
 };
